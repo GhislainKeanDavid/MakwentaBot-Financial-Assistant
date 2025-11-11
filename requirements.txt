@@ -5,7 +5,7 @@ langgraph
 
 # LLM Provider (You can swap this for others like anthropic, google-genai, etc.)
 openai
-
+langchain-openai
 # API Framework and Server
 fastapi
 uvicorn
