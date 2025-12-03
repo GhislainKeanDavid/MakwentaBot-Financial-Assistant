@@ -17,17 +17,17 @@ def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL)
     return conn
 
-def record_transaction_db(user_id: str, amount: float, category: str, description: Optional[str] = None) -> bool:
+def record_transaction_db(user_id: str, amount: float, category: str, description: Optional[str] = None, expense_date: Optional[str] = None) -> bool:
     """Inserts a new transaction record into the database."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
         sql = """
-            INSERT INTO transactions (user_id, amount, category, description)
+            INSERT INTO transactions (user_id, amount, category, description, expense_date)
             VALUES (%s, %s, %s, %s);
         """
-        cur.execute(sql, (user_id, amount, category, description))
+        cur.execute(sql, (user_id, amount, category, description, expense_date))
         
         conn.commit()
         cur.close()

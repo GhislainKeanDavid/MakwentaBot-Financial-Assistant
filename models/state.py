@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Annotated
+from typing import TypedDict, List, Annotated, Optional
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ class Transaction(BaseModel):
     amount: float
     category: str
     description: str = ""
+    expense_date: Optional[str] = None
     
 # The core state object passed between nodes in the LangGraph workflow.
 class GraphState(TypedDict):

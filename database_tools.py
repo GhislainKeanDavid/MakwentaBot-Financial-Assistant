@@ -14,14 +14,15 @@ def record_transaction(
     amount: float,
     category: str,
     user_id: str,
-    description: Optional[str] = None # Change description to Optional
+    description: Optional[str] = None,
+    expense_date: Optional[str] = None
 ) -> str:
     """Records a new financial transaction (expense or income) to the database."""
     if amount <= 0:
         return "Error: Amount must be positive. Please specify a valid expense."
     
     # NEW LOGIC: Call the database manager
-    success = record_transaction_db(user_id, amount, category, description)
+    success = record_transaction_db(user_id, amount, category, description, expense_date)
 
     if success:
         # Tell the agent what to do next
