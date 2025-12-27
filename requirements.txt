@@ -21,4 +21,9 @@ pydantic
 
 # Telegram Integration
 python-telegram-bot[webhooks]
-httpx # For making internal API calls
+httpx # For making internal API calls and Google OAuth
+
+# Authentication & Security
+python-jose[cryptography]  # JWT token handling
+passlib[bcrypt]            # Password hashing with bcrypt
+redis                      # Redis caching for sessions and JWT blacklist

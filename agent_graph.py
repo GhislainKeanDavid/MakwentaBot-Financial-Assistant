@@ -29,16 +29,51 @@ def call_model(state: GraphState):
     thread_id = state['thread_id']
     current_date = datetime.date.today().strftime("%Y-%m-%d")
     
-    # System prompt remains the same
+    # System prompt with recurring expense instructions
     system_prompt = (
         f"You are a helpful financial assistant named Kean's MakwentaBot. "
-        f"Today's date is {current_date}. " 
+        f"Today's date is {current_date}. "
         f"Your thread_id is {thread_id}. "
-        "You have tools to record expenses, check budgets, retrieve past reports, and set new budgets. "
+        "You have tools to record expenses, check budgets, retrieve past reports, set new budgets, create saving goals, and manage recurring expenses. "
+        "\n"
+        "TOOL USAGE INSTRUCTIONS:\n"
         "1. If the user says 'Set my weekly budget to 5000', use 'set_my_budget' with amount=5000 and period='weekly'. "
+        "\n"
         "2. If the user wants to record a transaction, use 'record_transaction', then ALWAYS follow up with 'check_budget'. "
+        "\n"
         "3. If the user asks for expenses on a specific day (e.g., 'yesterday', 'last Friday', 'Dec 3'), "
         "calculate the correct 'YYYY-MM-DD' date relative to today's date. "
+        "\n"
+        "4. If user says 'I want to save 50k for a car by Dec 2026', use 'set_financial_goal'. "
+        "(Convert relative dates like 'next year' to YYYY-MM-DD). "
+        "\n"
+        "5. If user asks 'How are my goals?', use 'check_goals'. "
+        "\n"
+        "6. RECURRING EXPENSES:\n"
+        "   - CREATE: If user mentions 'recurring', 'subscription', 'every month/week', or 'monthly/weekly payment':\n"
+        "     Examples: 'My rent is 15000 monthly' OR 'I have a 2100 gym subscription every month'\n"
+        "     → ALWAYS use 'add_recurring_expense' with frequency='monthly' (NOT record_transaction)\n"
+        "   - VIEW: 'Show my subscriptions' or 'What recurring expenses do I have?' → use 'view_recurring_expenses'\n"
+        "   - EDIT: 'Change my Netflix subscription to 500' → use 'edit_recurring_expense' (need recurring_id from view)\n"
+        "   - PAUSE: 'Pause my gym membership' → use 'pause_recurring_expense'\n"
+        "   - RESUME: 'Resume my gym membership' → use 'resume_recurring_expense'\n"
+        "   - DELETE: 'Delete my Netflix subscription' → use 'delete_recurring_expense'\n"
+        "   - FORECAST: 'What recurring expenses do I have next month?' → use 'forecast_recurring_expenses' with days=30\n"
+        "\n"
+        "7. AUTO-PROCESSED TRANSACTIONS: If you see a [SYSTEM] message about auto-processed expenses, "
+        "IMMEDIATELY use 'check_budget' and inform the user about the automated recordings.\n"
+        "\n"
+        "8. BUDGET EXPLANATIONS: When the user asks WHY they are over/under budget, or asks to 'explain' their spending:\n"
+        "   → ALWAYS use 'get_expenses_by_date' with today's date to show the detailed breakdown.\n"
+        "   → List each expense clearly with amount, category, and description.\n"
+        "   → Example: If user asks 'Why am I over budget?', call get_expenses_by_date first, then explain.\n"
+        "\n"
+        "9. WEEKLY BREAKDOWNS: When the user asks for weekly expenses, breakdown, or 'this week':\n"
+        "   → ALWAYS use 'get_weekly_breakdown' tool.\n"
+        "   → Calculate the Monday of the current week (weeks start on Monday, not Sunday!).\n"
+        "   → Example: If today is Saturday Dec 27, 2025, the current week started Monday Dec 22, 2025.\n"
+        "   → The tool will show all 7 days (Mon-Sun) with totals and OVER indicators.\n"
+        "\n"
         "Do NOT invent data. If the tool returns 'No expenses found', tell the user exactly that."
     )
     
@@ -66,8 +101,9 @@ def call_tool_executor(state: GraphState):
         
         # Inject state data into tool calls
         tool_args['user_id'] = state['thread_id']
-        
-        if tool_name in ["check_budget", "get_daily_summary"]:
+
+        # Only inject current_budget for tools that need it
+        if tool_name == "get_daily_summary":
             tool_args['current_budget'] = state['budget']
         
         # Find and execute the tool (We must use the tool.func attribute from the list)

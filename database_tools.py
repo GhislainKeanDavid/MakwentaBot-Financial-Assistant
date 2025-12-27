@@ -1,10 +1,10 @@
-import datetime
+from datetime import datetime
 from models.state import Transaction
 from typing import List
 from typing import Optional
 from langchain_core.tools import tool 
 from models.budget import Budget
-from db_manager import record_transaction_db, get_spending_sum_db, get_expenses_by_date_db, upsert_budget_db, get_budget_db
+from db_manager import record_transaction_db, get_spending_sum_db, get_expenses_by_date_db, get_weekly_breakdown_db, upsert_budget_db, get_budget_db, create_goal_db, get_goals_db
 
 
 # --- FINANCIAL AGENT TOOLS ---
@@ -84,14 +84,28 @@ def get_daily_summary(user_id: str, current_budget: Budget) -> str:
 
 @tool
 def get_expenses_by_date(
-    user_id: str, 
+    user_id: str,
     date: str
 ) -> str:
     """
-    Retrieves a list of expenses for a specific date. 
+    Retrieves a list of expenses for a specific date.
     The date parameter MUST be in 'YYYY-MM-DD' format.
     """
     return get_expenses_by_date_db(user_id, date)
+
+@tool
+def get_weekly_breakdown(
+    user_id: str,
+    week_start_date: str
+) -> str:
+    """
+    Retrieves a day-by-day breakdown of expenses for a full week (Monday-Sunday).
+    Shows total spent each day with indicators for days that exceeded the daily budget.
+
+    'week_start_date': The Monday of the week to analyze, in 'YYYY-MM-DD' format.
+                       You must calculate the correct Monday based on today's date.
+    """
+    return get_weekly_breakdown_db(user_id, week_start_date)
 
 @tool
 def set_my_budget(
@@ -136,5 +150,250 @@ def set_my_budget(
     else:
         return "Failed to save budget to database."
 
+@tool
+def set_financial_goal(
+    user_id: str,
+    goal_name: str,
+    target_amount: float,
+    deadline_date: str
+) -> str:
+    """
+    Sets a financial savings goal.
+    'goal_name': What the user is saving for (e.g., 'Laptop').
+    'target_amount': The total cost.
+    'deadline_date': When they need it by (YYYY-MM-DD).
+    """
+
+    print(f"DEBUG: Starting set_financial_goal for {goal_name}")
+
+    try:
+        # --- FIX 1: Force inputs to correct types ---
+        target_amount = float(target_amount) 
+        deadline_dt = datetime.strptime(deadline_date, "%Y-%m-%d")
+        
+        today = datetime.now()
+        days_remaining = (deadline_dt - today).days
+        
+        if days_remaining <= 0:
+            return "Error: The deadline must be in the future."
+            
+        daily_save = target_amount / days_remaining
+        weekly_save = daily_save * 7
+        monthly_save = daily_save * 30
+        
+        breakdown = (
+            f"To reach ₱{target_amount:,.2f} by {deadline_date}:\n"
+            f"• Daily: ₱{daily_save:,.2f}\n"
+            f"• Weekly: ₱{weekly_save:,.2f}\n"
+            f"• Monthly: ₱{monthly_save:,.2f}"
+        )
+        
+    except Exception as e:
+        # --- FIX 2: Catch ANY error and print it ---
+        error_msg = f"DEBUG: Crash during calculation: {str(e)}"
+        print(error_msg)
+        return f"Error calculating goal details: {str(e)}"
+
+    # 2. Database Call
+    print("DEBUG: Calling Database...") 
+    result = create_goal_db(user_id, goal_name, target_amount, deadline_date)
+    print(f"DEBUG: Database returned type: {type(result)} and value: {result}")
+    
+    # Check if result is a tuple (New version) or just a bool (Old version)
+    if isinstance(result, tuple):
+        success, message = result
+    else:
+        success = result
+        message = "Goal saved (details unavailable)."
+
+    # 3. Return Success Message
+    if success:
+        return f"✅ Goal '{goal_name}' set successfully!\n\n{breakdown}"
+    else:
+        return f"Failed to save goal. Database message: {message}"
+
+# 3. Define the CHECK GOALS tool
+@tool
+def check_goals(user_id: str) -> str:
+    """Retrieves the status of all current savings goals."""
+    return get_goals_db(user_id)
+
+# ===== RECURRING EXPENSE TOOLS =====
+
+@tool
+def add_recurring_expense(
+    user_id: str,
+    amount: float,
+    category: str,
+    frequency: str,
+    description: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+) -> str:
+    """
+    Creates a new recurring expense that will automatically record transactions.
+
+    'amount': The transaction amount for each occurrence.
+    'category': Expense category (e.g., 'Rent', 'Subscription').
+    'frequency': Must be 'daily', 'weekly', 'biweekly', 'monthly', or 'yearly'.
+    'description': Optional details about the recurring expense.
+    'start_date': When to start (YYYY-MM-DD). Defaults to today.
+    'end_date': When to stop (YYYY-MM-DD). Leave empty for indefinite.
+    """
+    from db_manager import create_recurring_expense_db
+
+    # Validation
+    valid_frequencies = ['daily', 'weekly', 'biweekly', 'monthly', 'yearly']
+    if frequency.lower() not in valid_frequencies:
+        return f"Error: Frequency must be one of {valid_frequencies}."
+
+    if amount <= 0:
+        return "Error: Amount must be positive."
+
+    # Call database
+    success, message = create_recurring_expense_db(
+        user_id, amount, category, frequency.lower(),
+        description, start_date, end_date
+    )
+
+    if success:
+        return (f"✅ Recurring expense created: {category} - ₱{amount:,.2f} ({frequency})\n"
+                f"{message}\n"
+                f"This will be automatically recorded when due.")
+    else:
+        return f"❌ Failed to create recurring expense: {message}"
+
+@tool
+def view_recurring_expenses(
+    user_id: str,
+    include_paused: bool = False
+) -> str:
+    """
+    Lists all recurring expenses for the user.
+
+    'include_paused': Set to True to include paused/inactive recurring expenses.
+    """
+    from db_manager import get_recurring_expenses_db
+
+    active_only = not include_paused
+    return get_recurring_expenses_db(user_id, active_only)
+
+@tool
+def edit_recurring_expense(
+    user_id: str,
+    recurring_id: int,
+    amount: Optional[float] = None,
+    category: Optional[str] = None,
+    description: Optional[str] = None,
+    frequency: Optional[str] = None,
+    end_date: Optional[str] = None
+) -> str:
+    """
+    Modifies an existing recurring expense.
+
+    'recurring_id': The ID number of the recurring expense to edit (from view_recurring_expenses).
+    'amount': New amount (optional).
+    'category': New category (optional).
+    'description': New description (optional).
+    'frequency': New frequency - 'daily', 'weekly', 'biweekly', 'monthly', 'yearly' (optional).
+    'end_date': New end date in YYYY-MM-DD format (optional).
+    """
+    from db_manager import update_recurring_expense_db
+
+    if frequency and frequency.lower() not in ['daily', 'weekly', 'biweekly', 'monthly', 'yearly']:
+        return "Error: Invalid frequency value."
+
+    success, message = update_recurring_expense_db(
+        user_id, recurring_id, amount, category, description,
+        frequency.lower() if frequency else None, end_date
+    )
+
+    if success:
+        return f"✅ {message}"
+    else:
+        return f"❌ {message}"
+
+@tool
+def pause_recurring_expense(
+    user_id: str,
+    recurring_id: int
+) -> str:
+    """
+    Pauses a recurring expense (stops auto-recording without deleting).
+
+    'recurring_id': The ID number of the recurring expense to pause.
+    """
+    from db_manager import toggle_recurring_expense_db
+
+    success, message = toggle_recurring_expense_db(user_id, recurring_id, False)
+
+    if success:
+        return f"⏸️ {message} It will no longer auto-record transactions."
+    else:
+        return f"❌ {message}"
+
+@tool
+def resume_recurring_expense(
+    user_id: str,
+    recurring_id: int
+) -> str:
+    """
+    Resumes a paused recurring expense (re-enables auto-recording).
+
+    'recurring_id': The ID number of the recurring expense to resume.
+    """
+    from db_manager import toggle_recurring_expense_db
+
+    success, message = toggle_recurring_expense_db(user_id, recurring_id, True)
+
+    if success:
+        return f"▶️ {message} It will resume auto-recording transactions."
+    else:
+        return f"❌ {message}"
+
+@tool
+def delete_recurring_expense(
+    user_id: str,
+    recurring_id: int
+) -> str:
+    """
+    Permanently deletes a recurring expense.
+
+    'recurring_id': The ID number of the recurring expense to delete.
+    WARNING: This action cannot be undone. Consider using pause_recurring_expense instead.
+    """
+    from db_manager import delete_recurring_expense_db
+
+    success, message = delete_recurring_expense_db(user_id, recurring_id)
+
+    if success:
+        return f"🗑️ {message}"
+    else:
+        return f"❌ {message}"
+
+@tool
+def forecast_recurring_expenses(
+    user_id: str,
+    days: int = 30
+) -> str:
+    """
+    Shows predicted recurring expenses for upcoming days (for budget planning).
+
+    'days': Number of days to forecast (default: 30).
+    """
+    from db_manager import forecast_recurring_expenses_db
+
+    if days < 1 or days > 365:
+        return "Error: Days must be between 1 and 365."
+
+    return forecast_recurring_expenses_db(user_id, days)
+
 # List of tools to be used by the LangGraph agent
-FINANCIAL_TOOLS = [record_transaction, check_budget, get_daily_summary, get_expenses_by_date, set_my_budget]
+FINANCIAL_TOOLS = [
+    record_transaction, check_budget, get_daily_summary, get_expenses_by_date,
+    get_weekly_breakdown, set_my_budget, set_financial_goal, check_goals,
+    # Recurring expense tools
+    add_recurring_expense, view_recurring_expenses, edit_recurring_expense,
+    pause_recurring_expense, resume_recurring_expense, delete_recurring_expense,
+    forecast_recurring_expenses
+]

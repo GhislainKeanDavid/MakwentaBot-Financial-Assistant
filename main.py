@@ -90,9 +90,23 @@ async def chat_endpoint(request: AgentRequest):
                 budget=DEFAULT_BUDGET
             )
             USER_AGENTS[thread_id] = initial_state
-        
+
         current_state = USER_AGENTS[thread_id]
-        
+
+        # === NEW: AUTO-PROCESS RECURRING EXPENSES ===
+        from db_manager import process_due_recurring_expenses_db
+        count, message = process_due_recurring_expenses_db(thread_id)
+
+        if count > 0:
+            # Inject system notification into conversation
+            notification = (f"🔔 Auto-processed {count} recurring expense(s). "
+                          f"You MUST use check_budget to inform the user.")
+            current_state['messages'].append(
+                HumanMessage(content=f"[SYSTEM]: {notification}")
+            )
+            print(f"Auto-processed {count} recurring expenses for user {thread_id}")
+        # ============================================
+
         # 2. Append the new HumanMessage
         current_state['messages'].append(HumanMessage(content=user_input))
 
