@@ -65,20 +65,42 @@ def check_budget(user_id: str) -> str:
 @tool
 def get_daily_summary(user_id: str, current_budget: Budget) -> str:
     """Generates a formatted daily budget and spending summary for a proactive notification."""
-    # ... (code to get name and currency remains the same)
-    
-    # NEW LOGIC: Get real total weekly expense from the database
-    total_week_expense = get_spending_sum_db(user_id, "week", "All")
-    weekly_budget = current_budget.weekly_limits.get("All", 2000.00) 
-    
-    # ... (rest of summary formatting remains the same)
-    # The return summary will now use real data.
-    
+    from datetime import datetime
+
+    # Get current date
+    today = datetime.now().strftime("%A, %B %d, %Y")
+
+    # Default values (can be customized per user later)
+    name = "User"
+    currency = "₱"
+
+    # Get real total weekly expense from the database
+    total_week_expense = get_spending_sum_db(user_id, "week")
+
+    # Get weekly budget from database or use current_budget fallback
+    budget_data = get_budget_db(user_id)
+    if budget_data:
+        weekly_budget = budget_data.get("weekly", 2000.00)
+    else:
+        weekly_budget = current_budget.weekly_limits.get("All", 2000.00) if hasattr(current_budget, 'weekly_limits') else 2000.00
+
+    # Calculate remaining budget
+    remaining = weekly_budget - total_week_expense
+
+    # Build summary
     summary = f"Hello {name}!\n📅 {today}\n\n"
     summary += "--- WEEKLY FINANCIAL STATUS ---\n"
     summary += f"Weekly Budget: **{currency}{weekly_budget:,.2f}**\n"
     summary += f"Spent This Week: **{currency}{total_week_expense:,.2f}**\n"
-    summary += f"Remaining: **{currency}{(weekly_budget - total_week_expense):,.2f}**\n"
+    summary += f"Remaining: **{currency}{remaining:,.2f}**\n"
+
+    # Add status indicator
+    if total_week_expense > weekly_budget:
+        summary += "\n⚠️ **Warning:** You've exceeded your weekly budget!"
+    elif remaining < (weekly_budget * 0.2):
+        summary += "\n⚡ **Alert:** You're running low on your weekly budget."
+    else:
+        summary += "\n✅ **Status:** You're within your budget. Keep it up!"
 
     return summary
 
@@ -163,41 +185,33 @@ def set_financial_goal(
     'target_amount': The total cost.
     'deadline_date': When they need it by (YYYY-MM-DD).
     """
-
-    print(f"DEBUG: Starting set_financial_goal for {goal_name}")
-
     try:
-        # --- FIX 1: Force inputs to correct types ---
-        target_amount = float(target_amount) 
+        # Force inputs to correct types
+        target_amount = float(target_amount)
         deadline_dt = datetime.strptime(deadline_date, "%Y-%m-%d")
-        
+
         today = datetime.now()
         days_remaining = (deadline_dt - today).days
-        
+
         if days_remaining <= 0:
             return "Error: The deadline must be in the future."
-            
+
         daily_save = target_amount / days_remaining
         weekly_save = daily_save * 7
         monthly_save = daily_save * 30
-        
+
         breakdown = (
             f"To reach ₱{target_amount:,.2f} by {deadline_date}:\n"
             f"• Daily: ₱{daily_save:,.2f}\n"
             f"• Weekly: ₱{weekly_save:,.2f}\n"
             f"• Monthly: ₱{monthly_save:,.2f}"
         )
-        
+
     except Exception as e:
-        # --- FIX 2: Catch ANY error and print it ---
-        error_msg = f"DEBUG: Crash during calculation: {str(e)}"
-        print(error_msg)
         return f"Error calculating goal details: {str(e)}"
 
-    # 2. Database Call
-    print("DEBUG: Calling Database...") 
+    # Database Call
     result = create_goal_db(user_id, goal_name, target_amount, deadline_date)
-    print(f"DEBUG: Database returned type: {type(result)} and value: {result}")
     
     # Check if result is a tuple (New version) or just a bool (Old version)
     if isinstance(result, tuple):

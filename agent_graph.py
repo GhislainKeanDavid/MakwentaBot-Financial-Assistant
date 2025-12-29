@@ -98,8 +98,9 @@ def call_tool_executor(state: GraphState):
     for call in tool_calls:
         tool_name = call.get("name")
         tool_args = call.get("args", {}).copy()
-        
-        # Inject state data into tool calls
+
+        # Inject state data into tool calls (always override user_id for security)
+        # This ensures the user_id from state takes precedence over any LLM-provided value
         tool_args['user_id'] = state['thread_id']
 
         # Only inject current_budget for tools that need it

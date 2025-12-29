@@ -18,7 +18,7 @@ def get_db_connection():
     return conn
 
 def record_transaction_db(user_id: str, amount: float, category: str, description: Optional[str] = None, expense_date: Optional[str] = None) -> bool:
-    """Inserts a new transaction record into the database."""
+    """Inserts a new transaction record into the database. Supports both Telegram (user_id) and web (web_user_id) users."""
     try:
         from datetime import date
 
@@ -29,12 +29,23 @@ def record_transaction_db(user_id: str, amount: float, category: str, descriptio
         conn = get_db_connection()
         cur = conn.cursor()
 
-        sql = """
-            INSERT INTO transactions (user_id, amount, category, description, expense_date)
-            VALUES (%s, %s, %s, %s, %s);
-        """
-        cur.execute(sql, (user_id, amount, category, description, expense_date))
-        
+        # Determine if this is a web user (numeric) or Telegram user (text)
+        try:
+            web_user_id_val = int(user_id)
+            # Numeric user_id -> web user
+            sql = """
+                INSERT INTO transactions (web_user_id, amount, category, description, expense_date)
+                VALUES (%s, %s, %s, %s, %s);
+            """
+            cur.execute(sql, (web_user_id_val, amount, category, description, expense_date))
+        except ValueError:
+            # Text user_id -> Telegram user
+            sql = """
+                INSERT INTO transactions (user_id, amount, category, description, expense_date)
+                VALUES (%s, %s, %s, %s, %s);
+            """
+            cur.execute(sql, (user_id, amount, category, description, expense_date))
+
         conn.commit()
         cur.close()
         conn.close()
@@ -73,18 +84,29 @@ def get_spending_sum_db(user_id: str, period: str, category: Optional[str] = Non
             monday_str = monday.strftime("%Y-%m-%d")
             time_filter = f"AND expense_date >= '{monday_str}'"
 
+        # Build parameterized query to prevent SQL injection
+        # Support both Telegram users (user_id) and web users (web_user_id)
+        try:
+            web_user_id_val = int(user_id)
+            user_filter = "web_user_id = %s"
+            params = [web_user_id_val]
+        except ValueError:
+            user_filter = "user_id = %s"
+            params = [user_id]
+
         category_filter = ""
         # Only apply category filter if a specific category is requested
         if category and category.lower() != 'all':
-             category_filter = f"AND category ILIKE '{category}'"
+            category_filter = "AND category ILIKE %s"
+            params.append(category)
 
         # SQL query to sum the amounts (using expense_date, not transaction_date)
         sql = f"""
             SELECT COALESCE(SUM(amount), 0)
             FROM transactions
-            WHERE user_id = %s {category_filter} {time_filter};
+            WHERE {user_filter} {category_filter} {time_filter};
         """
-        cur.execute(sql, (user_id,))
+        cur.execute(sql, tuple(params))
 
         total_sum = cur.fetchone()[0]
 
@@ -97,18 +119,30 @@ def get_spending_sum_db(user_id: str, period: str, category: Optional[str] = Non
 
 
 def get_expenses_by_date_db(user_id: str, query_date: str) -> str:
-    """Retrieves expenses for a specific date from the database."""
+    """Retrieves expenses for a specific date from the database. Supports both Telegram and web users."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        sql = """
-            SELECT category, amount, description 
-            FROM transactions 
-            WHERE user_id = %s AND expense_date = %s
-            ORDER BY record_date ASC;
-        """
-        cur.execute(sql, (user_id, query_date))
+        # Support both Telegram users (user_id) and web users (web_user_id)
+        try:
+            web_user_id_val = int(user_id)
+            sql = """
+                SELECT category, amount, description
+                FROM transactions
+                WHERE web_user_id = %s AND expense_date = %s
+                ORDER BY record_date ASC;
+            """
+            cur.execute(sql, (web_user_id_val, query_date))
+        except ValueError:
+            sql = """
+                SELECT category, amount, description
+                FROM transactions
+                WHERE user_id = %s AND expense_date = %s
+                ORDER BY record_date ASC;
+            """
+            cur.execute(sql, (user_id, query_date))
+
         rows = cur.fetchall()
         
         cur.close()
@@ -137,7 +171,7 @@ def get_expenses_by_date_db(user_id: str, query_date: str) -> str:
 def get_weekly_breakdown_db(user_id: str, week_start_date: str) -> str:
     """
     Retrieves daily expense totals for a full week (Mon-Sun) starting from week_start_date.
-    week_start_date should be a Monday in YYYY-MM-DD format.
+    week_start_date should be a Monday in YYYY-MM-DD format. Supports both Telegram and web users.
     """
     try:
         from datetime import datetime, timedelta
@@ -148,9 +182,21 @@ def get_weekly_breakdown_db(user_id: str, week_start_date: str) -> str:
         # Parse the start date
         start = datetime.strptime(week_start_date, "%Y-%m-%d")
 
+        # Determine if this is a web user or Telegram user
+        try:
+            web_user_id_val = int(user_id)
+            is_web_user = True
+        except ValueError:
+            is_web_user = False
+
         # Get user's daily budget limit for comparison
-        budget_sql = "SELECT daily_limit FROM budgets WHERE user_id = %s;"
-        cur.execute(budget_sql, (user_id,))
+        if is_web_user:
+            budget_sql = "SELECT daily_limit FROM budgets WHERE web_user_id = %s;"
+            cur.execute(budget_sql, (web_user_id_val,))
+        else:
+            budget_sql = "SELECT daily_limit FROM budgets WHERE user_id = %s;"
+            cur.execute(budget_sql, (user_id,))
+
         budget_row = cur.fetchone()
         daily_limit = float(budget_row[0]) if budget_row else 0.0
 
@@ -166,12 +212,21 @@ def get_weekly_breakdown_db(user_id: str, week_start_date: str) -> str:
             day_name = day_names[i]
 
             # Query expenses for this specific day
-            sql = """
-                SELECT COALESCE(SUM(amount), 0)
-                FROM transactions
-                WHERE user_id = %s AND expense_date = %s;
-            """
-            cur.execute(sql, (user_id, date_str))
+            if is_web_user:
+                sql = """
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM transactions
+                    WHERE web_user_id = %s AND expense_date = %s;
+                """
+                cur.execute(sql, (web_user_id_val, date_str))
+            else:
+                sql = """
+                    SELECT COALESCE(SUM(amount), 0)
+                    FROM transactions
+                    WHERE user_id = %s AND expense_date = %s;
+                """
+                cur.execute(sql, (user_id, date_str))
+
             day_total = float(cur.fetchone()[0])
             week_total += day_total
 
@@ -194,22 +249,40 @@ def get_weekly_breakdown_db(user_id: str, week_start_date: str) -> str:
 
 
 def upsert_budget_db(user_id: str, daily: float, weekly: float, monthly: float) -> bool:
-    """Updates the budget limits for a user."""
+    """Updates the budget limits for a user. Supports both Telegram and web users."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        sql = """
-            INSERT INTO budgets (user_id, daily_limit, weekly_limit, monthly_limit, updated_at)
-            VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (user_id) 
-            DO UPDATE SET 
-                daily_limit = EXCLUDED.daily_limit,
-                weekly_limit = EXCLUDED.weekly_limit,
-                monthly_limit = EXCLUDED.monthly_limit,
-                updated_at = NOW();
-        """
-        cur.execute(sql, (user_id, daily, weekly, monthly))
+
+        # Determine if this is a web user or Telegram user
+        try:
+            web_user_id_val = int(user_id)
+            # Web user - use web_user_id column
+            sql = """
+                INSERT INTO budgets (web_user_id, daily_limit, weekly_limit, monthly_limit, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (web_user_id)
+                DO UPDATE SET
+                    daily_limit = EXCLUDED.daily_limit,
+                    weekly_limit = EXCLUDED.weekly_limit,
+                    monthly_limit = EXCLUDED.monthly_limit,
+                    updated_at = NOW();
+            """
+            cur.execute(sql, (web_user_id_val, daily, weekly, monthly))
+        except ValueError:
+            # Telegram user - use user_id column
+            sql = """
+                INSERT INTO budgets (user_id, daily_limit, weekly_limit, monthly_limit, updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (user_id)
+                DO UPDATE SET
+                    daily_limit = EXCLUDED.daily_limit,
+                    weekly_limit = EXCLUDED.weekly_limit,
+                    monthly_limit = EXCLUDED.monthly_limit,
+                    updated_at = NOW();
+            """
+            cur.execute(sql, (user_id, daily, weekly, monthly))
+
         conn.commit()
         cur.close()
         conn.close()
@@ -219,17 +292,23 @@ def upsert_budget_db(user_id: str, daily: float, weekly: float, monthly: float) 
         return False
 
 def get_budget_db(user_id: str):
-    """Retrieves the current budget limits for a user."""
+    """Retrieves the current budget limits for a user. Supports both Telegram and web users."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        cur.execute("SELECT daily_limit, weekly_limit, monthly_limit FROM budgets WHERE user_id = %s", (user_id,))
+
+        # Support both Telegram users (user_id) and web users (web_user_id)
+        try:
+            web_user_id_val = int(user_id)
+            cur.execute("SELECT daily_limit, weekly_limit, monthly_limit FROM budgets WHERE web_user_id = %s", (web_user_id_val,))
+        except ValueError:
+            cur.execute("SELECT daily_limit, weekly_limit, monthly_limit FROM budgets WHERE user_id = %s", (user_id,))
+
         row = cur.fetchone()
-        
+
         cur.close()
         conn.close()
-        
+
         if row:
             return {"daily": float(row[0]), "weekly": float(row[1]), "monthly": float(row[2])}
         return None
@@ -238,16 +317,26 @@ def get_budget_db(user_id: str):
         return None
 
 def create_goal_db(user_id: str, name: str, target: float, deadline: str) -> tuple[bool, str]:
-    """Creates a new financial goal. Returns (Success, Message)."""
+    """Creates a new financial goal. Returns (Success, Message). Supports both Telegram and web users."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        sql = """
-            INSERT INTO goals (user_id, goal_name, target_amount, deadline)
-            VALUES (%s, %s, %s, %s);
-        """
-        cur.execute(sql, (user_id, name, target, deadline))
+
+        # Determine if this is a web user or Telegram user
+        try:
+            web_user_id_val = int(user_id)
+            sql = """
+                INSERT INTO goals (web_user_id, goal_name, target_amount, deadline)
+                VALUES (%s, %s, %s, %s);
+            """
+            cur.execute(sql, (web_user_id_val, name, target, deadline))
+        except ValueError:
+            sql = """
+                INSERT INTO goals (user_id, goal_name, target_amount, deadline)
+                VALUES (%s, %s, %s, %s);
+            """
+            cur.execute(sql, (user_id, name, target, deadline))
+
         conn.commit()
         cur.close()
         conn.close()
@@ -258,14 +347,20 @@ def create_goal_db(user_id: str, name: str, target: float, deadline: str) -> tup
         return False, error_msg # Return the specific error
 
 def get_goals_db(user_id: str) -> str:
-    """Retrieves all active goals for a user."""
+    """Retrieves all active goals for a user. Supports both Telegram and web users."""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # Get goals that aren't fully funded yet (optional filter)
-        sql = "SELECT goal_name, target_amount, current_amount, deadline FROM goals WHERE user_id = %s;"
-        cur.execute(sql, (user_id,))
+        # Support both Telegram users (user_id) and web users (web_user_id)
+        try:
+            web_user_id_val = int(user_id)
+            sql = "SELECT goal_name, target_amount, current_amount, deadline FROM goals WHERE web_user_id = %s;"
+            cur.execute(sql, (web_user_id_val,))
+        except ValueError:
+            sql = "SELECT goal_name, target_amount, current_amount, deadline FROM goals WHERE user_id = %s;"
+            cur.execute(sql, (user_id,))
+
         rows = cur.fetchall()
 
         cur.close()
@@ -354,15 +449,26 @@ def create_recurring_expense_db(
                     # Handle leap year edge case (Feb 29)
                     next_occ = next_occ.replace(year=next_occ.year + 1, day=28)
 
-        # Insert into database
-        sql = """
-            INSERT INTO recurring_expenses
-            (user_id, amount, category, description, frequency, start_date, end_date, next_occurrence)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING recurring_id;
-        """
-        params = (user_id, amount, category, description, frequency,
-                  start_dt.strftime("%Y-%m-%d"), end_date, next_occ.strftime("%Y-%m-%d"))
+        # Insert into database - support both Telegram and web users
+        try:
+            web_user_id_val = int(user_id)
+            sql = """
+                INSERT INTO recurring_expenses
+                (web_user_id, amount, category, description, frequency, start_date, end_date, next_occurrence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING recurring_id;
+            """
+            params = (web_user_id_val, amount, category, description, frequency,
+                      start_dt.strftime("%Y-%m-%d"), end_date, next_occ.strftime("%Y-%m-%d"))
+        except ValueError:
+            sql = """
+                INSERT INTO recurring_expenses
+                (user_id, amount, category, description, frequency, start_date, end_date, next_occurrence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING recurring_id;
+            """
+            params = (user_id, amount, category, description, frequency,
+                      start_dt.strftime("%Y-%m-%d"), end_date, next_occ.strftime("%Y-%m-%d"))
 
         cur.execute(sql, params)
         recurring_id = cur.fetchone()[0]
