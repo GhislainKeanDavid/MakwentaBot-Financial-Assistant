@@ -63,7 +63,9 @@ def get_spending_sum_db(user_id: str, period: str, category: Optional[str] = Non
         cur = conn.cursor()
 
         # Define time filters based on the required period
+        # Store time filter parameters separately for proper ordering
         time_filter = ""
+        time_params = []
         if period == "day":
             time_filter = "AND expense_date = CURRENT_DATE"
         elif period == "week":
@@ -72,7 +74,9 @@ def get_spending_sum_db(user_id: str, period: str, category: Optional[str] = Non
             days_since_monday = today.weekday()  # 0 = Monday, 6 = Sunday
             monday = today - timedelta(days=days_since_monday)
             monday_str = monday.strftime("%Y-%m-%d")
-            time_filter = f"AND expense_date >= '{monday_str}'"
+            # Use parameterized query to prevent SQL injection
+            time_filter = "AND expense_date >= %s"
+            time_params.append(monday_str)
         elif period == "daily":
             # Alias for "day"
             time_filter = "AND expense_date = CURRENT_DATE"
@@ -82,23 +86,30 @@ def get_spending_sum_db(user_id: str, period: str, category: Optional[str] = Non
             days_since_monday = today.weekday()
             monday = today - timedelta(days=days_since_monday)
             monday_str = monday.strftime("%Y-%m-%d")
-            time_filter = f"AND expense_date >= '{monday_str}'"
+            # Use parameterized query to prevent SQL injection
+            time_filter = "AND expense_date >= %s"
+            time_params.append(monday_str)
 
         # Build parameterized query to prevent SQL injection
         # Support both Telegram users (user_id) and web users (web_user_id)
+        # Build params in the correct order: user_filter, category_filter, time_filter
+        params = []
         try:
             web_user_id_val = int(user_id)
             user_filter = "web_user_id = %s"
-            params = [web_user_id_val]
+            params.append(web_user_id_val)
         except ValueError:
             user_filter = "user_id = %s"
-            params = [user_id]
+            params.append(user_id)
 
         category_filter = ""
         # Only apply category filter if a specific category is requested
         if category and category.lower() != 'all':
             category_filter = "AND category ILIKE %s"
             params.append(category)
+
+        # Add time filter parameters last
+        params.extend(time_params)
 
         # SQL query to sum the amounts (using expense_date, not transaction_date)
         sql = f"""
